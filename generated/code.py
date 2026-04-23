@@ -1,91 +1,105 @@
 ```python
 import math
+import cmath
+import unittest
 from typing import Union
 
-def calculate_root(number: float, degree: float = 2) -> Union[float, complex]:
+Number = Union[int, float]
+ResultType = Union[float, complex]
+
+
+def calculate_root(number: Number, n: int = 2) -> ResultType:
     """
-    Calculates the nth root of a given number.
+    Calculates the n-th root of a number.
 
     Args:
-        number (float): The number to take the root of.
-        degree (float): The degree of the root (default is 2 for square root).
+        number (int | float): The number to find the root of.
+        n (int): The degree of the root. Defaults to 2 (square root).
 
     Returns:
-        float or complex: The calculated root.
+        float | complex: The n-th root of the number.
 
     Raises:
-        ValueError: If degree is zero or not finite/real.
+        ValueError: If n <= 0 or n is not an integer.
+        TypeError: If input types are invalid.
     """
-    if not isinstance(degree, (int, float)) or not math.isfinite(degree):
-        raise ValueError("Root degree must be a finite real number.")
+    if not isinstance(n, int) or n <= 0:
+        raise ValueError("Root degree 'n' must be a positive integer.")
     if not isinstance(number, (int, float)):
-        raise ValueError("Number must be a real number.")
-    if degree == 0:
-        raise ValueError("Root degree cannot be zero.")
+        raise TypeError("Input 'number' must be an integer or float.")
 
-    # Handle integer-degree roots for correct negative/odd root semantics
-    is_integer_degree = isinstance(degree, int) or (isinstance(degree, float) and degree.is_integer())
-    if is_integer_degree:
-        int_degree = int(degree)
-        if number < 0 and int_degree % 2 == 1:
-            # Odd roots of negative number: real result
-            root = -((-number) ** (1 / int_degree))
-            return root
-        elif number < 0 and int_degree % 2 == 0:
-            # Even root of negative: complex result
-            root = complex(number) ** (1 / int_degree)
-            return root
-        else:
-            # Positive number or zero
-            return number ** (1 / int_degree)
-    else:
-        # Non-integer root degree; use complex for negative input
-        if number < 0:
-            return complex(number) ** (1 / degree)
-        return number ** (1 / degree)
+    if n == 1:
+        return float(number)
 
-# Unit tests
+    # Handle zero: 0 ** (1/n) == 0 for n > 0
+    if number == 0:
+        return 0.0
+
+    # Odd root of negative numbers is real
+    if number < 0:
+        if n % 2 == 0:
+            # Even root of negative number: complex result
+            # Use polar form for correct result
+            root = cmath.exp(cmath.log(number) / n)
+            # Remove insignificant real/imaginary parts due to floating-point errors
+            real = 0.0 if math.isclose(root.real, 0.0, abs_tol=1e-12) else root.real
+            imag = 0.0 if math.isclose(root.imag, 0.0, abs_tol=1e-12) else root.imag
+            return complex(real, imag)
+        else:  # Odd root: real result
+            return -(-number) ** (1 / n)
+
+    # Normal (real) root
+    return float(number) ** (1 / n)
+
+
+class TestCalculateRoot(unittest.TestCase):
+    def test_square_root(self):
+        self.assertAlmostEqual(calculate_root(9, 2), 3.0)
+        self.assertAlmostEqual(calculate_root(16), 4.0)
+        self.assertAlmostEqual(calculate_root(0, 2), 0.0)
+
+    def test_cube_root(self):
+        self.assertAlmostEqual(calculate_root(8, 3), 2.0)
+        self.assertAlmostEqual(calculate_root(-27, 3), -3.0)
+
+    def test_nth_root(self):
+        self.assertAlmostEqual(calculate_root(32, 5), 2.0)
+
+    def test_root_one(self):
+        self.assertEqual(calculate_root(5, 1), 5.0)
+
+    def test_even_root_negative(self):
+        result = calculate_root(-16, 2)
+        self.assertIsInstance(result, complex)
+        self.assertAlmostEqual(result.real, 0.0, places=7)
+        self.assertAlmostEqual(result.imag, 4.0, places=7)
+
+    def test_invalid_n(self):
+        with self.assertRaises(ValueError):
+            calculate_root(9, 0)
+        with self.assertRaises(ValueError):
+            calculate_root(9, -4)
+        with self.assertRaises(ValueError):
+            calculate_root(9, 2.5)
+
+    def test_invalid_number_type(self):
+        with self.assertRaises(TypeError):
+            calculate_root("a", 2)
+
+    def test_zero_root_degree(self):
+        with self.assertRaises(ValueError):
+            calculate_root(10, 0)
+
+    def test_non_integer_n(self):
+        with self.assertRaises(ValueError):
+            calculate_root(4, 2.0)
+        with self.assertRaises(ValueError):
+            calculate_root(8, "3")  # type: ignore
+
+    def test_zero_base_various_n(self):
+        self.assertEqual(calculate_root(0, 5), 0.0)
+        self.assertEqual(calculate_root(0, 7), 0.0)
+
 if __name__ == "__main__":
-    test_cases = [
-        (27, 3, 3),
-        (16, 2, 4),
-        (81, 4, 3),
-        (-8, 3, -2),
-        (0, 5, 0),
-        (10, 1, 10),
-        (-16, 2, complex(0, 4)),
-        # Non-integer degree, negative input
-        (-16, 2.5, complex(-1.454427098, 3.356399723)),  # Approximate complex result
-    ]
-
-    for number, degree, expected in test_cases:
-        result = calculate_root(number, degree)
-        if isinstance(expected, complex):
-            assert (
-                abs(result.real - expected.real) < 1e-6
-                and abs(result.imag - expected.imag) < 1e-6
-            ), f"Failed for {number}^{1/degree}: expected {expected}, got {result}"
-        else:
-            assert abs(result - expected) < 1e-9, (
-                f"Failed for {number}^{1/degree}: expected {expected}, got {result}"
-            )
-
-    # Test: Invalid degree
-    for invalid_degree in [0, float('inf'), float('nan'), 'a']:
-        try:
-            calculate_root(10, invalid_degree)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"Failed to raise ValueError for degree={invalid_degree}")
-
-    # Test: Invalid number type
-    try:
-        calculate_root('a', 2)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Failed to raise ValueError for number='a'")
-
-    print("All tests passed.")
+    unittest.main()
 ```
