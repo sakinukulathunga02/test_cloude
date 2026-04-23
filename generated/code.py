@@ -1,204 +1,180 @@
 ```python
-from typing import Any, Callable, Iterable, Union, Optional
-import collections.abc
-import numbers
-from decimal import Decimal, getcontext, InvalidOperation
+from collections.abc import Iterable
+from decimal import Decimal, InvalidOperation
+from typing import Any, Callable, Optional, Union
 
-def advanced_sum(
+Number = Union[int, float, Decimal]
+
+
+def is_numeric(val: Any) -> bool:
+    """Check if value is numeric (int, float, Decimal) or a numeric string."""
+    if isinstance(val, (int, float, Decimal)):
+        return True
+    if isinstance(val, (str, bytes)):
+        try:
+            float(val)
+            return True
+        except (ValueError, TypeError):
+            return False
+    return False
+
+
+def to_number(val: Any) -> Number:
+    """Converts val to number. Tries int, float, then Decimal."""
+    if isinstance(val, (int, float, Decimal)):
+        return val
+    if isinstance(val, bytes):
+        try:
+            val = val.decode()
+        except Exception:
+            raise ValueError(f"Cannot decode bytes {val!r} to string for conversion.")
+    if isinstance(val, str):
+        val_strip = val.strip()
+        try:
+            return int(val_strip)
+        except ValueError:
+            pass
+        try:
+            return float(val_strip)
+        except ValueError:
+            pass
+        try:
+            return Decimal(val_strip)
+        except (InvalidOperation, ValueError):
+            pass
+    raise ValueError(f"Cannot convert {val!r} to a number.")
+
+
+def _flatten(items: Any) -> Iterable:
+    """Recursively flattens nested iterables except for str/bytes."""
+    if isinstance(items, (str, bytes)):
+        yield items
+    elif isinstance(items, Iterable):
+        for item in items:
+            yield from _flatten(item)
+    else:
+        yield items
+
+
+def sum_advanced(
     *args: Any,
-    filter_func: Optional[Callable[[Any], bool]] = None,
-    flatten: bool = True,
-    use_decimal: bool = False,
-    ignore_non_numeric: bool = True
-) -> Union[int, float, Decimal]:
+    filter_fn: Optional[Callable[[Number], bool]] = None,
+    handle_invalid: str = "ignore",  # 'ignore', 'error'
+    parse_numeric_strings: bool = True
+) -> Number:
     """
-    An advanced summation function.
+    Advanced summation function.
 
-    Parameters:
-        *args: Values to sum. Each can be a single value or (nested) iterable.
-        filter_func: Optional function to filter which numeric values to sum.
-        flatten: Recursively flatten nested iterables if True.
-        use_decimal: Use Decimal for higher precision.
-        ignore_non_numeric: If True, skips non-numerics; else, raises error.
+    Args:
+        *args: Numbers or (possibly nested) iterables of numbers.
+        filter_fn: Optional function: number -> bool.
+        handle_invalid: 'ignore' skips invalid/non-numeric entries; 'error' raises ValueError.
+        parse_numeric_strings: If True, numeric strings/bytes are parsed and included in sum.
 
     Returns:
-        The sum of numeric entries, using Decimal if specified.
+        The sum of all valid numbers after flattening/validation/filtering.
 
     Raises:
-        TypeError: If non-numerics encountered when ignore_non_numeric is False.
-        ValueError: If no numeric values post-filtering and ignore_non_numeric is False.
-        ArithmeticError: For Decimal errors.
-
-    Examples:
-        advanced_sum(1, 2, 3) -> 6
-        advanced_sum([1, [2, 3], 4]) -> 10
-        advanced_sum(1, 'a', 3.5, ignore_non_numeric=True) -> 4.5
-        advanced_sum([1, 2, 3, 4, 5], filter_func=lambda x: x % 2 == 0) -> 6
-        advanced_sum(1, 2.1, use_decimal=True) -> Decimal('3.1')
+        ValueError: If invalid input is found and handle_invalid is 'error'.
     """
+    if not args:
+        return 0
 
-    def is_non_string_iterable(obj: Any) -> bool:
-        return (
-            isinstance(obj, collections.abc.Iterable)
-            and not isinstance(obj, (str, bytes, bytearray))
-        )
+    result: Number = 0
 
-    def flatten_items(obj: Any) -> Iterable[Any]:
-        """Recursively flatten obj into an iterable of leaf items (if flatten enabled)."""
-        if flatten and is_non_string_iterable(obj):
-            for item in obj:
-                yield from flatten_items(item)
-        else:
-            yield obj
+    for item in _flatten(args):
+        # Optionally skip non-numeric str/bytes
+        if isinstance(item, (str, bytes)) and not parse_numeric_strings:
+            if handle_invalid == "error":
+                raise ValueError(f"Non-numeric string/bytes found: {item!r}")
+            continue
 
-    # Gather all input items into one flat sequence if flatten is True
-    items: list[Any] = []
-    for arg in args:
-        if flatten and is_non_string_iterable(arg):
-            items.extend(flatten_items(arg))
-        else:
-            items.append(arg)
-
-    # Apply filter_func if given
-    if filter_func is not None:
-        filtered_items = (item for item in items if filter_func(item))
-    else:
-        filtered_items = iter(items)
-
-    def convert_numeric(val: Any) -> Optional[Union[int, float, Decimal]]:
-        """Convert value to numeric type or return None if unconvertible (and ignoring non-numeric)."""
-        if use_decimal:
+        if is_numeric(item):
             try:
-                # Explicitly skip booleans unless user wants them
-                if isinstance(val, Decimal):
-                    return val
-                if isinstance(val, bool):
-                    return Decimal(int(val))
-                if isinstance(val, int):
-                    return Decimal(val)
-                if isinstance(val, float):
-                    # Use str to avoid float representation error in Decimal
-                    return Decimal(str(val))
-                if isinstance(val, str):
-                    return Decimal(val)
-                raise TypeError
-            except (InvalidOperation, ValueError, TypeError):
-                if ignore_non_numeric:
-                    return None
-                raise TypeError(f"Cannot convert {val!r} to Decimal")
+                number = to_number(item)
+            except ValueError:
+                if handle_invalid == "error":
+                    raise
+                continue
+            if filter_fn and not filter_fn(number):
+                continue
+            result += number
         else:
-            try:
-                if isinstance(val, bool):
-                    return int(val)
-                if isinstance(val, numbers.Number):
-                    return val
-                # Try conversion from string to float
-                return float(val)
-            except (ValueError, TypeError):
-                if ignore_non_numeric:
-                    return None
-                raise TypeError(f"Non-numeric value: {val!r}")
+            if handle_invalid == "error":
+                raise ValueError(f"Non-numeric value found: {item!r}")
 
-    # Special-case: flatten == False and single argument, return as-is for non-numerics (if requested)
-    if not flatten and len(args) == 1 and not all(
-        isinstance(item, numbers.Number) or isinstance(item, str) for item in items
-    ):
-        # Check if returning as is (from user intent/unit test). But all numeric/strs must be summed.
-        if ignore_non_numeric:
-            # Possibly, user expected to return the lone input unchanged if no numbers found
-            # Only do this if items is single and not numeric
-            only_item = items[0]
-            if not (isinstance(only_item, numbers.Number) or isinstance(only_item, str)):
-                return only_item  # e.g. [1, [2, 3]]
+    return result
 
-    if use_decimal:
-        getcontext().prec = 28  # default precision
-        total = Decimal(0)
-    else:
-        total: Union[int, float] = 0
 
-    count = 0
-    for item in filtered_items:
-        num = convert_numeric(item)
-        if num is not None:
-            total += num
-            count += 1
-
-    # For ignore_non_numeric=True, return sum (0 if no numerics found).
-    if count == 0 and not ignore_non_numeric:
-        raise ValueError("No numeric values found for summation.")
-
-    return total
-
-# -------- UNIT TESTS BELOW --------
-
+# ---------------------- Unit tests ----------------------
 import unittest
 
-class TestAdvancedSum(unittest.TestCase):
+class TestSumAdvanced(unittest.TestCase):
+    def test_basic_numbers(self):
+        self.assertEqual(sum_advanced(1, 2, 3), 6)
+        self.assertEqual(sum_advanced(1.5, 2.5), 4.0)
+        self.assertEqual(sum_advanced(Decimal('1.1'), 2), Decimal('3.1'))
 
-    def test_simple_sum(self):
-        self.assertEqual(advanced_sum(1, 2, 3), 6)
+    def test_collections(self):
+        self.assertEqual(sum_advanced([1, 2, 3]), 6)
+        self.assertEqual(sum_advanced((1, 2), {3, 4}), 10)
+        self.assertEqual(sum_advanced([1, [2, 3], [4, [5, 6]]]), 21)
 
-    def test_list_sum(self):
-        self.assertEqual(advanced_sum([1, 2, 3]), 6)
+    def test_nested_collections(self):
+        data = [1, [2, [3, [4, 5]], 6], 7]
+        self.assertEqual(sum_advanced(data), 28)
 
-    def test_nested_list_sum(self):
-        self.assertEqual(advanced_sum([1, [2, 3], [4, [5]]]), 15)
+    def test_strings(self):
+        self.assertEqual(sum_advanced("2", "3.5"), 5.5)
+        self.assertEqual(sum_advanced("2", 1), 3)
+        self.assertEqual(sum_advanced(["1", 2, "3.5"]), 6.5)
 
-    def test_range_sum(self):
-        self.assertEqual(advanced_sum(range(1, 6)), 15)
+    def test_ignore_invalid(self):
+        self.assertEqual(sum_advanced([1, '2', 'x', None, 3]), 6)
+        self.assertEqual(sum_advanced({'a': 1, 2: 2}, handle_invalid='ignore'), 2)
 
-    def test_variadic_and_iterable(self):
-        self.assertEqual(advanced_sum(1, [2, [3, 4]], 5), 15)
+    def test_error_on_invalid(self):
+        with self.assertRaises(ValueError):
+            sum_advanced(1, 'xyz', handle_invalid='error')
+        with self.assertRaises(ValueError):
+            sum_advanced('a', handle_invalid='error')
 
-    def test_ignore_non_numeric(self):
-        self.assertEqual(advanced_sum(1, 'a', 3.5, ignore_non_numeric=True), 4.5)
-
-    def test_non_numeric_error(self):
-        with self.assertRaises(TypeError):
-            advanced_sum(1, 'a', 3.5, ignore_non_numeric=False)
-
-    def test_with_filter_func(self):
+    def test_filter_fn(self):
         self.assertEqual(
-            advanced_sum([1, 2, 3, 4, 5], filter_func=lambda x: x % 2 == 0),
+            sum_advanced([1, -2, 3, -4], filter_fn=lambda x: x > 0),
+            4
+        )
+        self.assertEqual(
+            sum_advanced([1, 2, 3, 4], filter_fn=lambda x: x % 2 == 0),
             6
         )
 
-    def test_filter_func_excludes_all(self):
-        self.assertEqual(
-            advanced_sum([1, 3, 5], filter_func=lambda x: x > 10),
-            0
-        )
+    def test_parse_numeric_strings(self):
+        self.assertEqual(sum_advanced('2.2', '3.3', parse_numeric_strings=True), 5.5)
+        self.assertEqual(sum_advanced('two', 1, parse_numeric_strings=True), 1)
+        with self.assertRaises(ValueError):
+            sum_advanced('2.2', 'three', parse_numeric_strings=False, handle_invalid='error')
 
-    def test_empty_input(self):
-        self.assertEqual(advanced_sum(), 0)
-        self.assertEqual(advanced_sum([]), 0)
+    def test_empty(self):
+        self.assertEqual(sum_advanced(), 0)
+        self.assertEqual(sum_advanced([], ()), 0)
 
-    def test_use_decimal(self):
-        result = advanced_sum(1.1, 2.2, use_decimal=True)
-        self.assertEqual(float(result), 3.3)
+    def test_large_numbers(self):
+        numbers = [10**6] * 1000
+        self.assertEqual(sum_advanced(numbers), 10**9)
 
-    def test_weighted_sum(self):
-        data = [{'val': 2, 'w': 3}, {'val': 5, 'w': 2}]
-        weightsum = sum(item['val'] * item['w'] for item in data)
-        self.assertEqual(
-            advanced_sum(
-                [item['val'] * item['w'] for item in data]
-            ),
-            weightsum
-        )
+    def test_bytes(self):
+        self.assertEqual(sum_advanced([b"123", 2], parse_numeric_strings=True), 125)
+        self.assertEqual(sum_advanced([b"123", 2], parse_numeric_strings=False), 2)
 
-    def test_string_numbers(self):
-        self.assertEqual(advanced_sum("2", "3.5", use_decimal=False), 5.5)
-        result = advanced_sum("2", "3.5", use_decimal=True)
-        self.assertEqual(result, Decimal('5.5'))
-
-    def test_large_sum(self):
-        result = advanced_sum([10**18, 10**18, 1.0], use_decimal=True)
-        self.assertEqual(result, Decimal(str(10**18)) * 2 + Decimal('1.0'))
-
-    def test_flatten_false(self):
-        self.assertEqual(advanced_sum([1, [2, 3]], flatten=False), [1, [2, 3]])
+    def test_custom_types(self):
+        class MyNum:
+            def __int__(self):
+                return 5
+            def __float__(self):
+                return 5.0
+        # Since MyNum is not recognized as numeric, it's ignored
+        self.assertEqual(sum_advanced(MyNum()), 0)
 
 if __name__ == "__main__":
     unittest.main()
