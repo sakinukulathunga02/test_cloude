@@ -1,66 +1,98 @@
 ```python
 import math
+import unittest
 
-def calculate_root(number, n=2):
+def calculate_root(number, root_degree=2):
     """
-    Calculate the n-th real root of a number.
+    Calculate the nth root of a number.
 
     Parameters:
-        number (int or float): The number to compute the root of.
-        n (int): The degree of the root (default is 2, square root).
+        number (float or int): The number to calculate the root for.
+        root_degree (int): The degree of the root. Default is 2 (square root).
 
     Returns:
-        float: The calculated n-th root of the number.
+        float: The calculated root.
 
     Raises:
-        ValueError: If n is not a positive integer.
-        ValueError: If number is negative and n is even (result would be complex).
+        ValueError: If root_degree is not integer >= 2,
+                    or if number is negative and root_degree is even,
+                    or if inputs are invalid.
+    Examples:
+        >>> calculate_root(9)
+        3.0
+        >>> calculate_root(27, 3)
+        3.0
+        >>> calculate_root(16, 4)
+        2.0
     """
-    if not isinstance(n, int) or n <= 0:
-        raise ValueError("Root degree 'n' must be a positive integer (n > 0).")
+    if not isinstance(root_degree, int) or root_degree < 2:
+        raise ValueError("root_degree must be an integer >= 2.")
+    if not isinstance(number, (int, float)):
+        raise ValueError("number must be an int or float.")
+    if math.isnan(number):
+        raise ValueError("number must not be NaN.")
+    if number < 0:
+        if root_degree % 2 == 0:
+            raise ValueError("Cannot calculate even root of negative number (in real numbers).")
+        else:
+            return -((-number) ** (1 / root_degree))
     if number == 0:
         return 0.0
+    return number ** (1 / root_degree)
 
-    if number < 0:
-        if n % 2 == 0:
-            raise ValueError(
-                f"Cannot calculate even root ({n}) of a negative number ({number}). Result would be complex."
-            )
-        # Use math.copysign for correct root sign and improved numerical stability
-        return -((-number) ** (1.0 / n))
-    return number ** (1.0 / n)
+class TestCalculateRoot(unittest.TestCase):
+    def test_square_root(self):
+        self.assertAlmostEqual(calculate_root(9), 3.0)
+        self.assertAlmostEqual(calculate_root(16), 4.0)
+        self.assertAlmostEqual(calculate_root(0), 0.0)
+        self.assertAlmostEqual(calculate_root(2), math.sqrt(2))
 
-def _run_tests():
-    test_cases = [
-        (4, 2, 2.0),
-        (27, 3, 3.0),
-        (16, 4, 2.0),
-        (0, 2, 0.0),
-        (1, 5, 1.0),
-        (-27, 3, -3.0),
-        (64, 6, 2.0),
-        (81, 4, 3.0),
-    ]
-    for num, n, expected in test_cases:
-        result = calculate_root(num, n)
-        assert math.isclose(result, expected, rel_tol=1e-9, abs_tol=0.0), f"Failed for ({num}, {n}), got {result}, expected {expected}"
-    
-    # Test error cases
-    error_cases = [
-        {"args": (-16, 2), "err": ValueError},
-        {"args": (16, 0), "err": ValueError},
-        {"args": (16, -2), "err": ValueError},
-        {"args": (25, 2.5), "err": ValueError},
-    ]
-    for case in error_cases:
-        try:
-            calculate_root(*case["args"])
-            assert False, f"Expected {case['err']} for args {case['args']}"
-        except Exception as e:
-            assert isinstance(e, case["err"]), f"Wrong exception {type(e)} for args {case['args']}"
+    def test_nth_root(self):
+        self.assertAlmostEqual(calculate_root(27, 3), 3.0)
+        self.assertAlmostEqual(calculate_root(32, 5), 2.0)
+        self.assertAlmostEqual(calculate_root(81, 4), 3.0)
+        self.assertAlmostEqual(calculate_root(243, 5), 3.0)
+        self.assertAlmostEqual(calculate_root(10_000, 4), 10.0)
 
-    print("All tests passed.")
+    def test_negative_input_even_root(self):
+        with self.assertRaises(ValueError):
+            calculate_root(-16, 2)
+        with self.assertRaises(ValueError):
+            calculate_root(-32, 4)
+
+    def test_negative_input_odd_root(self):
+        self.assertAlmostEqual(calculate_root(-27, 3), -3.0)
+        self.assertAlmostEqual(calculate_root(-32, 5), -2.0)
+        self.assertAlmostEqual(calculate_root(-8, 5), -8**(1/5))
+
+    def test_invalid_root_degree(self):
+        with self.assertRaises(ValueError):
+            calculate_root(16, -2)
+        with self.assertRaises(ValueError):
+            calculate_root(16, 0)
+        with self.assertRaises(ValueError):
+            calculate_root(16, 1.5)
+        with self.assertRaises(ValueError):
+            calculate_root(16, float('nan'))
+        with self.assertRaises(ValueError):
+            calculate_root(16, None)
+
+    def test_invalid_number(self):
+        with self.assertRaises(ValueError):
+            calculate_root("a number", 2)
+        with self.assertRaises(ValueError):
+            calculate_root(None, 2)
+        with self.assertRaises(ValueError):
+            calculate_root(float('nan'), 2)
+
+    def test_float_degrees(self):
+        with self.assertRaises(ValueError):
+            calculate_root(16, 2.0)
+
+    def test_large_numbers(self):
+        self.assertAlmostEqual(calculate_root(1e8, 8), 10.0)
+        self.assertAlmostEqual(calculate_root(-1e9, 9), -10.0)
 
 if __name__ == "__main__":
-    _run_tests()
+    unittest.main()
 ```
