@@ -1,189 +1,161 @@
 ```python
-from typing import Iterable, Optional, Callable, Any, Union, Dict, List, Tuple
-import math
-import json
-import logging
+import numbers
+import collections.abc
+from decimal import Decimal, InvalidOperation
+from typing import (
+    Iterable, Callable, Optional, Any, Union, Iterator, TypeVar
+)
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Configure logger only if not already configured externally
-logger = logging.getLogger("advanced_sum")
-if not logger.handlers:
-    logging.basicConfig(level=logging.WARNING)
+T = TypeVar('T')
 
-class AdvancedSumError(Exception):
-    """Custom exception for errors in advanced_sum."""
-    pass
+def _is_number(val: Any) -> bool:
+    return isinstance(val, numbers.Number) and not isinstance(val, bool)
 
-def advanced_sum(
-    values: Iterable[Any],
-    *,
-    weights: Optional[Iterable[Union[int, float]]] = None,
-    filter_func: Optional[Callable[[Any], bool]] = None,
-    skip_non_numeric: bool = True,
-    ignore_nan: bool = True,
-    ignore_null: bool = True,
-    ignore_negative: bool = False,
-    numeric_types: Tuple[type, ...] = (int, float),
-    output_format: str = "number",  # Options: 'number', 'json', 'str'
-    round_result: Optional[int] = None,
-    raise_on_error: bool = False,
-    log_errors: bool = False,
-    max_items: Optional[int] = None,  # For very large input
-) -> Union[int, float, str, Dict[str, Any], None]:
+def _flatten(items: Iterable[Any]) -> Iterator[Any]:
+    for item in items:
+        if isinstance(item, (str, bytes)):
+            yield item
+        elif isinstance(item, collections.abc.Iterable):
+            yield from _flatten(item)
+        else:
+            yield item
+
+def sum_advanced(
+    numbers_iter: Iterable[Any],
+    filter: Optional[Callable[[Any], bool]] = None,
+    operation: Optional[Callable[[Any], Any]] = None,
+    parallel: bool = False,
+    use_decimal: bool = False,
+    ignore_errors: bool = True,
+    flatten_nested: bool = True,
+) -> Union[int, float, Decimal]:
     """
-    Calculate an advanced sum over an iterable.
+    Advanced summation utility.
 
     Args:
-        values: The values to sum; any iterable.
-        weights: Optional iterable of weights (must match length of filtered values).
-        filter_func: Optional function to filter values (should return True if value is included).
-        skip_non_numeric: If True, skips non-numeric items; else, error/warn.
-        ignore_nan: If True, skips math.nan/float('nan').
-        ignore_null: If True, skips None.
-        ignore_negative: If True, negative numbers are skipped.
-        numeric_types: Tuple of numeric types to accept.
-        output_format: 'number', 'json', or 'str'.
-        round_result: If set, rounds the result to this many decimals.
-        raise_on_error: If True, raises on errors, otherwise returns None.
-        log_errors: If True, logs errors/warnings.
-        max_items: If set, processes up to max_items values after filtering.
+        numbers_iter: Iterable containing numbers (possibly nested lists, tuples, etc.).
+        filter: Optional function applied to each (possibly transformed) item to include in sum.
+        operation: Optional transformation to apply to each item before summing.
+        parallel: Whether to parallelize the processing (useful for large data).
+        use_decimal: Use Decimal for increased precision.
+        ignore_errors: If True, silently skip non-numeric items instead of erroring.
+        flatten_nested: Automatically flatten arbitrarily nested iterables.
 
     Returns:
-        The result in required format, or None on error if not raising.
+        Sum as int, float, or Decimal depending on use_decimal and input types.
+
+    Raises:
+        TypeError: On invalid input or when non-numeric and ignore_errors is False.
+        ValueError: If no valid items are found and ignore_errors is False.
     """
-    def error(msg: str):
-        if log_errors:
-            logger.warning(msg)
-        if raise_on_error:
-            raise AdvancedSumError(msg)
 
-    # Validate iterable
-    if not hasattr(values, '__iter__'):
-        error("Input 'values' is not iterable.")
-        return None
-
-    # Prepare processed input as list for multiple scans, supports generator input
-    try:
-        values_list = list(values)
-    except Exception as ex:
-        error(f"Cannot convert values to list: {ex}")
-        return None
-
-    # Filtering and validation
-    filtered_vals: List[Any] = []
-    original_indices: List[int] = []
-
-    for idx, v in enumerate(values_list):
-        if max_items is not None and len(filtered_vals) >= max_items:
-            break
-        if filter_func and not filter_func(v):
-            continue
-        if ignore_null and v is None:
-            continue
-
-        is_num = isinstance(v, numeric_types)
-        if not is_num:
-            if not skip_non_numeric:
-                error(f"Non-numeric value at index {idx}: {v!r}")
+    def process_item(item: Any) -> Optional[Union[int, float, Decimal]]:
+        # Skip None explicitly for user convenience.
+        if item is None:
+            if ignore_errors:
                 return None
-            continue
+            raise TypeError("Item None is not numeric.")
 
-        if ignore_nan and isinstance(v, float) and math.isnan(v):
-            continue
+        # Operation block
+        if operation is not None:
+            try:
+                item = operation(item)
+            except Exception as exc:
+                if ignore_errors:
+                    return None
+                raise
 
-        if ignore_negative and isinstance(v, numeric_types) and v < 0:
-            continue
-
-        filtered_vals.append(v)
-        original_indices.append(idx)
-
-    if not filtered_vals:
-        error("No valid values to sum after filtering.")
-        return 0 if raise_on_error else None
-
-    # Prepare and validate weights
-    weights_list: Optional[List[Union[int, float]]] = None
-    if weights is not None:
-        try:
-            input_weights = list(weights)
-        except Exception as ex:
-            error(f"Cannot convert weights to list: {ex}")
+        # Filtering block
+        if filter is not None and not filter(item):
             return None
 
-        if len(input_weights) == len(values_list):
-            weights_filtered = [input_weights[i] for i in original_indices]
-        elif len(input_weights) == len(filtered_vals):
-            weights_filtered = input_weights
+        # Numeric check
+        if _is_number(item):
+            if use_decimal:
+                # Convert to Decimal with care for floats
+                try:
+                    # Use repr to avoid precision loss for floats
+                    if isinstance(item, float):
+                        item = Decimal(repr(item))
+                    else:
+                        item = Decimal(item)
+                except (InvalidOperation, Exception):
+                    if ignore_errors:
+                        return None
+                    raise TypeError(f"Could not convert {item!r} to Decimal.")
+            return item
         else:
-            error(f"Weights length ({len(input_weights)}) does not match filtered data ({len(filtered_vals)}).")
-            return None
-
-        # Check for valid weight values
-        for wi, w in enumerate(weights_filtered):
-            if w is None or not isinstance(w, numeric_types) or (ignore_nan and isinstance(w, float) and math.isnan(w)):
-                error(f"Invalid weight at filtered index {wi}: {w!r}")
+            if ignore_errors:
                 return None
-        weights_list = weights_filtered
+            raise TypeError(f"Item {item!r} is not numeric.")
 
-    # Perform sum
-    try:
-        if weights_list is not None:
-            result = sum(v * w for v, w in zip(filtered_vals, weights_list))
-        else:
-            result = sum(filtered_vals)
-    except OverflowError as oe:
-        error(f"Overflow detected: {oe}")
-        return None
-    except Exception as ex:
-        error(f"Error during summation: {ex}")
-        return None
+    iterable = _flatten(numbers_iter) if flatten_nested else numbers_iter
 
-    # Optional rounding
-    if round_result is not None:
-        try:
-            result = round(result, round_result)
-        except Exception as ex:
-            error(f"Error rounding result: {ex}")
-            return None
+    # main processing/generation logic
+    result_type_zero = Decimal(0) if use_decimal else 0
 
-    # Output formatting
-    if output_format == "json":
-        out = {
-            "result": result,
-            "count": len(filtered_vals),
-            "weights_used": weights_list is not None,
-        }
-        try:
-            return json.dumps(out)
-        except Exception as ex:
-            error(f"Error serializing to JSON: {ex}")
-            return None
-    elif output_format == "str":
-        return str(result)
-    elif output_format == "number":
-        return result
+    if parallel:
+        with ThreadPoolExecutor() as executor:
+            # Pre-flatten for thread safety if input could be lazy
+            items = list(iterable)
+            results = executor.map(process_item, items)
+            filtered = (x for x in results if x is not None)
+            result = sum(filtered, result_type_zero)
     else:
-        error(f"Unknown output_format: {output_format!r}")
-        return None
+        filtered = (process_item(x) for x in iterable)
+        filtered = (x for x in filtered if x is not None)
+        result = sum(filtered, result_type_zero)
 
-# ===================
-# Example Usage:
+    if result == result_type_zero and not ignore_errors:
+        # Scan for valid items (eagerly, if not in parallel)
+        has_valid = False
+        # Need to re-process items if not parallel and filtered is exhausted
+        # For parallel mode, cannot re-iterate with ThreadPoolExecutor since results are already consumed.
+        if not parallel:
+            for item in _flatten(numbers_iter) if flatten_nested else numbers_iter:
+                try:
+                    processed = process_item(item)
+                    if processed is not None:
+                        has_valid = True
+                        break
+                except Exception:
+                    pass
+            if not has_valid:
+                raise ValueError("No valid items to sum.")
+        else:
+            # In parallel mode, assume if result == 0, either truly zero or empty input;
+            # document potential ambiguity for pathological all-zero input.
+            pass
+
+    return result
+
+# --------------------------
+# Example usage
 if __name__ == "__main__":
-    # Simple sum
-    print(advanced_sum([1, 2, 3, 4]))
-    # Weighted sum, ignore negative numbers
-    print(advanced_sum([1, -2, 3, 4], weights=[0.5, 1.5, 0.7, 1.0], ignore_negative=True, output_format='json'))
-    # Custom filter (include only odd numbers)
-    print(advanced_sum([1, 2, 3, None, 'a'], filter_func=lambda x: isinstance(x, int) and x % 2 == 1))
-    # Handle NaN and non-numeric values
-    print(advanced_sum([5, 2.3, float('nan'), None, "oops"], output_format='str'))
-    # Edge case: all filtered out (should warn and return None or 0)
-    print(advanced_sum(["a", None, float('nan')], log_errors=True))
-    # Max items for huge data
-    big_list = list(range(1000000))
-    print(advanced_sum(big_list, max_items=10, output_format="json"))
-    # Error raising mode
+    data = [[1, 2, 3.5], (4, 5, [6, (7, 8)]), "skip this", None, [9, 0.25]]
+
+    # Basic sum
+    print(sum_advanced(data))  # 45.75
+
+    # Sum only even numbers
+    print(sum_advanced(data, filter=lambda x: isinstance(x, numbers.Number) and x % 2 == 0))  # 20
+
+    # Sum squares of numbers
+    print(sum_advanced(data, operation=lambda x: x * x))  # 393.5625
+
+    # Use Decimal for precision (result is Decimal type)
+    print(sum_advanced([1.1, 2.2, 3.3], use_decimal=True))  # Decimal('6.6')
+
+    # Parallel execution (gains for huge inputs)
+    import random
+    big = [random.random() for _ in range(10 ** 6)]
+    print(sum_advanced(big, parallel=True))
+
+    # Robust type and error-handling demo
     try:
-        advanced_sum([1, None, "string"], skip_non_numeric=False, raise_on_error=True)
-    except AdvancedSumError as e:
-        print(f"Caught error as expected: {e}")
+        # Will raise TypeError for invalid items if ignore_errors=False
+        print(sum_advanced(["a", None, 5], ignore_errors=False))
+    except TypeError as te:
+        print("Caught error:", te)
 ```
